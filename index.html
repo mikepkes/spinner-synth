@@ -427,7 +427,6 @@ class WheelPhysics {
                 }}>TAP TO ENABLE AUDIO</button>
               `}
 
-              <!-- Wheel -->
               <div style=${{ position: "relative", width: "min(320px, 80vw)", height: "min(320px, 80vw)" }}>
                 <div style=${{
                   position: "absolute", top: -8, left: "50%", transform: "translateX(-50%)", zIndex: 10,
@@ -501,7 +500,6 @@ class WheelPhysics {
                 color: "#998e75", fontSize: 11, cursor: "pointer", letterSpacing: 1,
               }}>\u25B6 TEST CLICK</button>
 
-              <!-- Sliders -->
               <div style=${{
                 width: "100%", maxWidth: 560,
                 display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))",
@@ -533,7 +531,6 @@ class WheelPhysics {
                 `)}
               </div>
 
-              <!-- Presets -->
               <div style=${{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
                 ${PRESETS.map(preset => html`
                   <button
