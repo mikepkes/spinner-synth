@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Wheel Synth</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0a0a0f; }
+  </style>
+  <script crossorigin src="https://unpkg.com/react@19/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@19/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;800&family=Outfit:wght@300;700;900&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useRef, useCallback, useEffect } = React;
+
+    const DEFAULTS = {
+      pegCount: 24,
+      clickFreq: 3200,
+      clickDecay: 0.035,
+      noiseDecay: 0.02,
+      noiseMix: 0.6,
+      filterCutoff: 4000,
+      filterQ: 2.5,
+      clickVolume: 0.8,
+      friction: 0.985,
+      pitchVariation: 0.15,
+    };
+
+    const PARAMS = [
+      { key: "pegCount", label: "Pegs", min: 6, max: 72, step: 1, unit: "" },
+      { key: "clickFreq", label: "Click Pitch", min: 800, max: 8000, step: 50, unit: "Hz" },
+      { key: "clickDecay", label: "Click Decay", min: 0.005, max: 0.15, step: 0.005, unit: "s" },
+      { key: "noiseDecay", label: "Noise Decay", min: 0.005, max: 0.1, step: 0.005, unit: "s" },
+      { key: "noiseMix", label: "Noise Mix", min: 0, max: 1, step: 0.05, unit: "" },
+      { key: "filterCutoff", label: "Filter Cutoff", min: 500, max: 12000, step: 100, unit: "Hz" },
+      { key: "filterQ", label: "Filter Q", min: 0.1, max: 15, step: 0.1, unit: "" },
+      { key: "clickVolume", label: "Volume", min: 0, max: 1, step: 0.05, unit: "" },
+      { key: "friction", label: "Friction", min: 0.96, max: 0.998, step: 0.001, unit: "" },
+      { key: "pitchVariation", label: "Pitch Wobble", min: 0, max: 0.5, step: 0.01, unit: "" },
+    ];
+
+    function WheelSynth() {
+      const [params, setParams] = useState({ ...DEFAULTS });
+      const [angle, setAngle] = useState(0);
+      const [isDragging, setIsDragging] = useState(false);
+      const [showDart, setShowDart] = useState(false);
+      const [isSpinning, setIsSpinning] = useState(false);
+      const [audioReady, setAudioReady] = useState(false);
+
+      const audioCtxRef = useRef(null);
+      const wheelRef = useRef(null);
+      const animRef = useRef(null);
+      const angleRef = useRef(0);
+      const velocityRef = useRef(0);
+      const lastPegRef = useRef(-1);
+      const lastDragRef = useRef({ angle: 0, time: 0 });
+      const paramsRef = useRef(params);
+      const isDraggingRef = useRef(false);
+
+      useEffect(() => { paramsRef.current = params; }, [params]);
+      useEffect(() => { isDraggingRef.current = isDragging; }, [isDragging]);
+
+      const ensureAudio = useCallback(() => {
+        if (!audioCtxRef.current) {
+          audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        const ctx = audioCtxRef.current;
+        if (ctx.state === "suspended") {
+          ctx.resume().then(() => setAudioReady(true));
+        } else {
+          setAudioReady(true);
+        }
+        return ctx;
+      }, []);
+
+      const playClick = useCallback((speed) => {
+        const ctx = audioCtxRef.current;
+        if (!ctx || ctx.state !== "running") return;
+        const p = paramsRef.current;
+        const now = ctx.currentTime;
+        const speedFactor = Math.min(Math.abs(speed) / 12, 1);
+        const intensity = 0.5 + 0.5 * speedFactor;
+        const variation = 1 + (Math.random() - 0.5) * p.pitchVariation;
+        const freq = p.clickFreq * variation;
+        const masterVol = p.clickVolume * intensity;
+
+        const master = ctx.createGain();
+        master.gain.setValueAtTime(masterVol, now);
+        master.connect(ctx.destination);
+
+        const toneMix = 1.0 - p.noiseMix;
+        if (toneMix > 0) {
+          const sine = ctx.createOscillator();
+          const sineGain = ctx.createGain();
+          sine.type = "sine";
+          sine.frequency.setValueAtTime(freq, now);
+          sine.frequency.setValueAtTime(freq * 0.5, now + p.clickDecay * 0.8);
+          sineGain.gain.setValueAtTime(toneMix * 0.7, now);
+          sineGain.gain.setTargetAtTime(0, now + 0.002, p.clickDecay * 0.3);
+          sine.connect(sineGain);
+          sineGain.connect(master);
+          sine.start(now);
+          sine.stop(now + p.clickDecay + 0.05);
+
+          const sq = ctx.createOscillator();
+          const sqGain = ctx.createGain();
+          sq.type = "square";
+          sq.frequency.setValueAtTime(freq * 1.5, now);
+          sq.frequency.setTargetAtTime(freq * 0.2, now, p.clickDecay * 0.2);
+          sqGain.gain.setValueAtTime(toneMix * 0.35, now);
+          sqGain.gain.setTargetAtTime(0, now + 0.001, p.clickDecay * 0.15);
+          sq.connect(sqGain);
+          sqGain.connect(master);
+          sq.start(now);
+          sq.stop(now + p.clickDecay + 0.05);
+        }
+
+        if (p.noiseMix > 0.01) {
+          const bufLen = Math.max(1024, Math.ceil(ctx.sampleRate * p.noiseDecay * 3));
+          const buf = ctx.createBuffer(1, bufLen, ctx.sampleRate);
+          const d = buf.getChannelData(0);
+          for (let i = 0; i < bufLen; i++) d[i] = Math.random() * 2 - 1;
+
+          const noise = ctx.createBufferSource();
+          noise.buffer = buf;
+
+          const nfilt = ctx.createBiquadFilter();
+          nfilt.type = "bandpass";
+          nfilt.frequency.setValueAtTime(p.filterCutoff, now);
+          nfilt.Q.setValueAtTime(Math.max(p.filterQ * 0.5, 0.5), now);
+
+          const nGain = ctx.createGain();
+          nGain.gain.setValueAtTime(p.noiseMix * 0.9, now);
+          nGain.gain.setTargetAtTime(0, now + 0.002, p.noiseDecay * 0.4);
+
+          noise.connect(nfilt);
+          nfilt.connect(nGain);
+          nGain.connect(master);
+          noise.start(now);
+          noise.stop(now + p.noiseDecay * 3 + 0.05);
+        }
+      }, []);
+
+      const getAngleFromEvent = useCallback((e) => {
+        const rect = wheelRef.current.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        return Math.atan2(clientY - cy, clientX - cx);
+      }, []);
+
+      const checkPeg = useCallback(() => {
+        const pegAngle = (2 * Math.PI) / paramsRef.current.pegCount;
+        const norm = ((angleRef.current % (2 * Math.PI)) + 4 * Math.PI) % (2 * Math.PI);
+        const currentPeg = Math.floor(norm / pegAngle);
+        if (currentPeg !== lastPegRef.current) {
+          lastPegRef.current = currentPeg;
+          return true;
+        }
+        return false;
+      }, []);
+
+      const handlePointerDown = useCallback((e) => {
+        e.preventDefault();
+        ensureAudio();
+        const a = getAngleFromEvent(e);
+        isDraggingRef.current = true;
+        setIsDragging(true);
+        velocityRef.current = 0;
+        lastDragRef.current = { angle: a, time: performance.now() };
+      }, [getAngleFromEvent, ensureAudio]);
+
+      const handlePointerMove = useCallback((e) => {
+        if (!isDraggingRef.current) return;
+        e.preventDefault();
+        const a = getAngleFromEvent(e);
+        let delta = a - lastDragRef.current.angle;
+        if (delta > Math.PI) delta -= 2 * Math.PI;
+        if (delta < -Math.PI) delta += 2 * Math.PI;
+
+        angleRef.current += delta;
+        setAngle(angleRef.current);
+
+        const now = performance.now();
+        const dt = (now - lastDragRef.current.time) / 1000;
+        if (dt > 0.001) {
+          velocityRef.current = delta / dt;
+        }
+        lastDragRef.current = { angle: a, time: now };
+
+        if (checkPeg()) {
+          playClick(velocityRef.current || 5);
+        }
+      }, [getAngleFromEvent, checkPeg, playClick]);
+
+      const handlePointerUp = useCallback(() => {
+        if (!isDraggingRef.current) return;
+        isDraggingRef.current = false;
+        setIsDragging(false);
+        if (Math.abs(velocityRef.current) > 0.3) {
+          setIsSpinning(true);
+        }
+      }, []);
+
+      useEffect(() => {
+        let running = true;
+        let lastTime = performance.now();
+
+        const tick = (now) => {
+          if (!running) return;
+          const dt = Math.min((now - lastTime) / 1000, 0.05);
+          lastTime = now;
+
+          if (!isDraggingRef.current && Math.abs(velocityRef.current) > 0.05) {
+            const frictionPerFrame = Math.pow(paramsRef.current.friction, dt * 60);
+            velocityRef.current *= frictionPerFrame;
+            angleRef.current += velocityRef.current * dt;
+            setAngle(angleRef.current);
+
+            if (checkPeg()) {
+              playClick(velocityRef.current);
+            }
+          } else if (!isDraggingRef.current && Math.abs(velocityRef.current) <= 0.05) {
+            velocityRef.current = 0;
+            setIsSpinning(false);
+          }
+
+          animRef.current = requestAnimationFrame(tick);
+        };
+
+        animRef.current = requestAnimationFrame(tick);
+        return () => { running = false; cancelAnimationFrame(animRef.current); };
+      }, [checkPeg, playClick]);
+
+      useEffect(() => {
+        const up = () => {
+          if (isDraggingRef.current) {
+            isDraggingRef.current = false;
+            setIsDragging(false);
+            if (Math.abs(velocityRef.current) > 0.3) setIsSpinning(true);
+          }
+        };
+        window.addEventListener("mouseup", up);
+        window.addEventListener("touchend", up);
+        window.addEventListener("touchcancel", up);
+        return () => {
+          window.removeEventListener("mouseup", up);
+          window.removeEventListener("touchend", up);
+          window.removeEventListener("touchcancel", up);
+        };
+      }, []);
+
+      const updateParam = (key, val) => setParams(p => ({ ...p, [key]: parseFloat(val) }));
+
+      const testClick = () => {
+        ensureAudio();
+        setTimeout(() => playClick(8), 100);
+      };
+
+      const generateDart = () => {
+        const p = params;
+        return `// Flutter Wheel of Fortune Click-Clack Synthesizer
+// Generated by Wheel Synth
+// Requires: flutter_soloud or audioplayers + raw PCM generation
+
+import 'dart:math';
+import 'dart:typed_data';
+
+class WheelClickSynth {
+  static const int pegCount = ${p.pegCount};
+  static const double clickFreqHz = ${p.clickFreq}.0;
+  static const double clickDecaySec = ${p.clickDecay};
+  static const double noiseDecaySec = ${p.noiseDecay};
+  static const double noiseMix = ${p.noiseMix};
+  static const double filterCutoffHz = ${p.filterCutoff}.0;
+  static const double filterQ = ${p.filterQ};
+  static const double clickVolume = ${p.clickVolume};
+  static const double friction = ${p.friction};
+  static const double pitchVariation = ${p.pitchVariation};
+
+  static const int sampleRate = 44100;
+  final Random _rng = Random();
+
+  Float32List generateClick({double speedFactor = 0.8}) {
+    final int totalSamples = (sampleRate * max(clickDecaySec, noiseDecaySec) * 3).ceil();
+    final samples = Float32List(totalSamples);
+    final variation = 1.0 + (_rng.nextDouble() - 0.5) * pitchVariation;
+    final freq = clickFreqHz * variation;
+    final vol = clickVolume * (0.5 + 0.5 * speedFactor);
+    final toneMix = 1.0 - noiseMix;
+
+    for (int i = 0; i < totalSamples; i++) {
+      final t = i / sampleRate;
+      double sample = 0.0;
+
+      if (t < clickDecaySec * 2 && toneMix > 0) {
+        final tau = clickDecaySec * 0.3;
+        final envTone = exp(-t / tau);
+        final currentFreq = freq * (1.0 - 0.5 * (t / clickDecaySec).clamp(0.0, 1.0));
+        sample += sin(2.0 * pi * currentFreq * t) * envTone * toneMix * 0.7;
+        final sqEnv = exp(-t / (tau * 0.5));
+        final sqPhase = sin(2.0 * pi * freq * 1.5 * t);
+        sample += (sqPhase >= 0 ? 1.0 : -1.0) * sqEnv * toneMix * 0.35;
+      }
+
+      if (t < noiseDecaySec * 3 && noiseMix > 0.01) {
+        final nTau = noiseDecaySec * 0.4;
+        final envNoise = exp(-t / nTau);
+        final noise = (_rng.nextDouble() * 2.0 - 1.0);
+        sample += noise * envNoise * noiseMix * 0.9;
+      }
+
+      samples[i] = (sample * vol).clamp(-1.0, 1.0);
+    }
+
+    return _applyBandpass(samples, filterCutoffHz, filterQ);
+  }
+
+  Float32List _applyBandpass(Float32List input, double cutoff, double q) {
+    final output = Float32List(input.length);
+    final w0 = 2.0 * pi * cutoff / sampleRate;
+    final alpha = sin(w0) / (2.0 * max(q * 0.5, 0.5));
+    final b0 = alpha;
+    final b2 = -alpha;
+    final a0 = 1.0 + alpha;
+    final a1 = -2.0 * cos(w0);
+    final a2 = 1.0 - alpha;
+
+    double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+    for (int i = 0; i < input.length; i++) {
+      final x0 = input[i];
+      output[i] = ((b0 * x0 + b2 * x2 - a1 * y1 - a2 * y2) / a0).clamp(-1.0, 1.0);
+      x2 = x1; x1 = x0;
+      y2 = y1; y1 = output[i];
+    }
+    return output;
+  }
+
+  Uint8List toInt16PCM(Float32List samples) {
+    final bytes = Uint8List(samples.length * 2);
+    final view = ByteData.view(bytes.buffer);
+    for (int i = 0; i < samples.length; i++) {
+      final val = (samples[i] * 32767).round().clamp(-32768, 32767);
+      view.setInt16(i * 2, val, Endian.little);
+    }
+    return bytes;
+  }
+}
+
+class WheelPhysics {
+  double angle = 0.0;
+  double angularVelocity = 0.0;
+  int lastPegIndex = -1;
+
+  bool update(double dt) {
+    if (angularVelocity.abs() < 0.05) {
+      angularVelocity = 0;
+      return false;
+    }
+    angularVelocity *= pow(WheelClickSynth.friction, dt * 60);
+    angle += angularVelocity * dt;
+    final pegAngle = 2.0 * pi / WheelClickSynth.pegCount;
+    final norm = ((angle % (2 * pi)) + 4 * pi) % (2 * pi);
+    final currentPeg = (norm / pegAngle).floor() % WheelClickSynth.pegCount;
+    if (currentPeg != lastPegIndex) {
+      lastPegIndex = currentPeg;
+      return true;
+    }
+    return false;
+  }
+
+  double get speedFactor => (angularVelocity.abs() / 12.0).clamp(0.0, 1.0);
+  void applySwipe(double velocity) { angularVelocity = velocity; }
+}
+`;
+      };
+
+      const pegs = [];
+      for (let i = 0; i < params.pegCount; i++) {
+        pegs.push((i / params.pegCount) * 360);
+      }
+
+      const speedDisplay = Math.abs(velocityRef.current).toFixed(1);
+
+      return (
+        <div style={{
+          minHeight: "100vh",
+          background: "#0a0a0f",
+          color: "#e8e4d9",
+          fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+          overflow: "auto",
+        }}>
+          <div style={{ maxWidth: 900, margin: "0 auto", padding: "24px 16px" }}>
+            <div style={{ textAlign: "center", marginBottom: 24 }}>
+              <h1 style={{
+                fontFamily: "'Outfit', sans-serif",
+                fontWeight: 900,
+                fontSize: "clamp(28px, 5vw, 42px)",
+                letterSpacing: "-1px",
+                margin: 0,
+                background: "linear-gradient(135deg, #f5c542 0%, #ff6b35 50%, #f5c542 100%)",
+                WebkitBackgroundClip: "text",
+                WebkitTextFillColor: "transparent",
+              }}>
+                WHEEL SYNTH
+              </h1>
+              <p style={{ color: "#665e4d", fontSize: 13, margin: "4px 0 0", letterSpacing: 3 }}>
+                CLICK &middot; CLACK &middot; GENERATOR
+              </p>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 24, alignItems: "center" }}>
+
+              {!audioReady && (
+                <button onClick={() => { ensureAudio(); setTimeout(() => playClick(8), 150); }} style={{
+                  padding: "10px 24px",
+                  background: "#ff6b35",
+                  border: "none",
+                  borderRadius: 6,
+                  color: "#fff",
+                  fontSize: 14,
+                  fontWeight: 700,
+                  fontFamily: "'Outfit', sans-serif",
+                  cursor: "pointer",
+                  letterSpacing: 1,
+                  animation: "pulse 1.5s ease-in-out infinite",
+                }}>
+                  TAP TO ENABLE AUDIO
+                </button>
+              )}
+
+              <style>{`@keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:0.7 } }`}</style>
+
+              {/* Wheel */}
+              <div style={{ position: "relative", width: "min(320px, 80vw)", height: "min(320px, 80vw)" }}>
+                <div style={{
+                  position: "absolute", top: -8, left: "50%", transform: "translateX(-50%)", zIndex: 10,
+                  width: 0, height: 0,
+                  borderLeft: "12px solid transparent", borderRight: "12px solid transparent",
+                  borderTop: `24px solid ${isSpinning || isDragging ? "#ff6b35" : "#f5c542"}`,
+                  filter: isSpinning ? "drop-shadow(0 0 8px #ff6b35)" : "none",
+                  transition: "border-top-color 0.2s, filter 0.2s",
+                }} />
+
+                <div
+                  ref={wheelRef}
+                  onMouseDown={handlePointerDown}
+                  onMouseMove={handlePointerMove}
+                  onMouseUp={handlePointerUp}
+                  onTouchStart={handlePointerDown}
+                  onTouchMove={handlePointerMove}
+                  onTouchEnd={handlePointerUp}
+                  style={{
+                    width: "100%", height: "100%", borderRadius: "50%",
+                    background: `conic-gradient(from ${angle}rad, ${
+                      Array.from({ length: params.pegCount }, (_, i) => {
+                        const c1 = i % 2 === 0 ? "#1a1820" : "#14131a";
+                        const pct = (i / params.pegCount) * 100;
+                        const pctNext = ((i + 1) / params.pegCount) * 100;
+                        return `${c1} ${pct}% ${pctNext}%`;
+                      }).join(", ")
+                    })`,
+                    border: "3px solid #2a2630",
+                    boxShadow: isSpinning
+                      ? "0 0 40px rgba(245,197,66,0.15), inset 0 0 60px rgba(0,0,0,0.5)"
+                      : "inset 0 0 60px rgba(0,0,0,0.5)",
+                    cursor: isDragging ? "grabbing" : "grab",
+                    touchAction: "none", userSelect: "none", position: "relative",
+                    transition: "box-shadow 0.3s",
+                  }}
+                >
+                  {pegs.map((deg, i) => (
+                    <div key={i} style={{
+                      position: "absolute", top: "50%", left: "50%",
+                      width: 3, height: "46%", transformOrigin: "50% 0%",
+                      transform: `rotate(${deg + (angle * 180 / Math.PI)}deg)`,
+                      pointerEvents: "none",
+                    }}>
+                      <div style={{
+                        position: "absolute", bottom: 2, left: "50%", transform: "translateX(-50%)",
+                        width: 6, height: 6, borderRadius: "50%",
+                        background: i % 3 === 0 ? "#f5c542" : "#3a3540",
+                      }} />
+                    </div>
+                  ))}
+
+                  <div style={{
+                    position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
+                    width: 48, height: 48, borderRadius: "50%",
+                    background: "radial-gradient(circle, #2a2630 0%, #14131a 100%)",
+                    border: "2px solid #3a3540",
+                    display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none",
+                  }}>
+                    <div style={{
+                      width: 8, height: 8, borderRadius: "50%",
+                      background: isSpinning ? "#f5c542" : "#3a3540", transition: "background 0.3s",
+                    }} />
+                  </div>
+                </div>
+
+                <div style={{
+                  position: "absolute", bottom: -28, left: "50%", transform: "translateX(-50%)",
+                  fontSize: 11, color: "#665e4d", letterSpacing: 2, whiteSpace: "nowrap",
+                }}>
+                  {isSpinning ? `\u25B8 ${speedDisplay} rad/s` : isDragging ? "\u25C9 DRAGGING" : "SWIPE TO SPIN"}
+                </div>
+              </div>
+
+              <button onClick={testClick} style={{
+                padding: "6px 16px", background: "transparent",
+                border: "1px solid #2a2630", borderRadius: 4,
+                color: "#998e75", fontSize: 11, cursor: "pointer", letterSpacing: 1,
+              }}>
+                &#9654; TEST CLICK
+              </button>
+
+              {/* Sliders */}
+              <div style={{
+                width: "100%", maxWidth: 560,
+                display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))",
+                gap: "2px", background: "#16151e", borderRadius: 8,
+                overflow: "hidden", border: "1px solid #1e1d28",
+              }}>
+                {PARAMS.map(({ key, label, min, max, step, unit }) => (
+                  <div key={key} style={{
+                    display: "flex", alignItems: "center", gap: 10,
+                    padding: "10px 14px", background: "#0f0e17",
+                  }}>
+                    <label style={{
+                      fontSize: 11, color: "#665e4d", minWidth: 90,
+                      letterSpacing: 0.5, textTransform: "uppercase",
+                    }}>{label}</label>
+                    <input
+                      type="range" min={min} max={max} step={step}
+                      value={params[key]}
+                      onChange={e => updateParam(key, e.target.value)}
+                      style={{ flex: 1, height: 4, accentColor: "#f5c542", cursor: "pointer" }}
+                    />
+                    <span style={{
+                      fontSize: 11, color: "#f5c542", minWidth: 52,
+                      textAlign: "right", fontVariantNumeric: "tabular-nums",
+                    }}>
+                      {params[key]}{unit && <span style={{ color: "#665e4d", marginLeft: 1 }}>{unit}</span>}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Presets */}
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
+                {[
+                  { name: "Classic TV", p: { ...DEFAULTS }},
+                  { name: "Ratchet", p: { pegCount: 12, clickFreq: 1200, clickDecay: 0.06, noiseDecay: 0.04, noiseMix: 0.3, filterCutoff: 2000, filterQ: 1.5, clickVolume: 0.9, friction: 0.975, pitchVariation: 0.05 }},
+                  { name: "Casino", p: { pegCount: 48, clickFreq: 5500, clickDecay: 0.015, noiseDecay: 0.01, noiseMix: 0.8, filterCutoff: 6000, filterQ: 5, clickVolume: 0.7, friction: 0.992, pitchVariation: 0.25 }},
+                  { name: "Wooden", p: { pegCount: 18, clickFreq: 1800, clickDecay: 0.08, noiseDecay: 0.05, noiseMix: 0.4, filterCutoff: 2500, filterQ: 1.0, clickVolume: 0.85, friction: 0.978, pitchVariation: 0.1 }},
+                ].map(preset => (
+                  <button
+                    key={preset.name}
+                    onClick={() => setParams(preset.p)}
+                    style={{
+                      padding: "6px 14px", background: "transparent",
+                      border: "1px solid #2a2630", borderRadius: 4,
+                      color: "#998e75", fontSize: 11, cursor: "pointer",
+                      letterSpacing: 1, textTransform: "uppercase",
+                    }}
+                    onMouseEnter={e => { e.target.style.borderColor = "#f5c542"; e.target.style.color = "#f5c542"; }}
+                    onMouseLeave={e => { e.target.style.borderColor = "#2a2630"; e.target.style.color = "#998e75"; }}
+                  >
+                    {preset.name}
+                  </button>
+                ))}
+              </div>
+
+              <button
+                onClick={() => setShowDart(!showDart)}
+                style={{
+                  padding: "12px 32px",
+                  background: showDart ? "#f5c542" : "transparent",
+                  border: "2px solid #f5c542", borderRadius: 6,
+                  color: showDart ? "#0a0a0f" : "#f5c542",
+                  fontSize: 13, fontWeight: 700, fontFamily: "'Outfit', sans-serif",
+                  cursor: "pointer", letterSpacing: 2, textTransform: "uppercase",
+                }}
+              >
+                {showDart ? "\u2715 CLOSE" : "\u2B21 GENERATE DART CODE"}
+              </button>
+
+              {showDart && (
+                <div style={{ width: "100%", maxWidth: 700, position: "relative" }}>
+                  <button
+                    onClick={() => navigator.clipboard.writeText(generateDart())}
+                    style={{
+                      position: "absolute", top: 8, right: 8,
+                      padding: "4px 12px", background: "#1e1d28",
+                      border: "1px solid #3a3540", borderRadius: 4,
+                      color: "#f5c542", fontSize: 11, cursor: "pointer", zIndex: 2, letterSpacing: 1,
+                    }}
+                  >
+                    COPY
+                  </button>
+                  <pre style={{
+                    background: "#0c0b14", border: "1px solid #1e1d28",
+                    borderRadius: 8, padding: 16, fontSize: 11, lineHeight: 1.6,
+                    color: "#c8c0b0", overflow: "auto", maxHeight: 500,
+                    margin: 0, whiteSpace: "pre", tabSize: 2,
+                  }}>
+                    {generateDart()}
+                  </pre>
+                </div>
+              )}
+
+              <div style={{
+                textAlign: "center", padding: "16px 0 32px",
+                fontSize: 10, color: "#2a2630", letterSpacing: 2,
+              }}>
+                DRAG THE WHEEL &middot; ADJUST PARAMETERS &middot; EXPORT TO DART
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(React.createElement(React.StrictMode, null, React.createElement(WheelSynth)));
+  </script>
+</body>
+</html>
