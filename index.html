@@ -9,6 +9,9 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { background: #0a0a0f; }
     @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:0.7 } }
+    select { -webkit-appearance: none; appearance: none; background: #0a0a0f; border: 1px solid #2a2630; color: #f5c542; padding: 4px 8px; border-radius: 3px; font-family: 'JetBrains Mono', monospace; font-size: 11px; cursor: pointer; outline: none; }
+    select:focus { border-color: #f5c542; }
+    select option { background: #0f0e17; color: #e8e4d9; }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
@@ -23,48 +26,288 @@
     var useCallback = React.useCallback;
     var useEffect = React.useEffect;
 
+    // ===== Constants =====
+    var WAVEFORMS = ["sine", "square", "sawtooth", "triangle"];
+    var FILTER_TYPES = ["lowpass", "highpass", "bandpass", "notch", "peaking"];
+    var NOISE_TYPES = ["white", "pink", "brown"];
+    var STRING_PARAMS = ["waveform", "osc2Waveform", "noiseType", "filterType"];
+
     var DEFAULTS = {
-      pegCount: 24, clickFreq: 3200, clickDecay: 0.035, noiseDecay: 0.02,
-      noiseMix: 0.6, filterCutoff: 4000, filterQ: 2.5, clickVolume: 0.8,
-      friction: 0.985, pitchVariation: 0.15,
+      pegCount: 24, waveform: "sine", clickFreq: 3200, clickDecay: 0.035, attack: 0.001,
+      osc2Waveform: "square", osc2Detune: 0, osc2Mix: 0.35,
+      noiseType: "white", noiseMix: 0.6, noiseDecay: 0.02,
+      filterType: "bandpass", filterCutoff: 4000, filterQ: 2.5, filterEnvAmount: 0, filterEnvDecay: 0.1,
+      distortion: 0, delayTime: 0, delayFeedback: 0, delayMix: 0, reverbDecay: 0, reverbMix: 0,
+      clickVolume: 0.8, friction: 0.985, pitchVariation: 0.15,
     };
 
-    var PARAMS = [
-      { key: "pegCount", label: "Pegs", min: 6, max: 72, step: 1, unit: "" },
-      { key: "clickFreq", label: "Click Pitch", min: 800, max: 8000, step: 50, unit: "Hz" },
-      { key: "clickDecay", label: "Click Decay", min: 0.005, max: 0.15, step: 0.005, unit: "s" },
-      { key: "noiseDecay", label: "Noise Decay", min: 0.005, max: 0.1, step: 0.005, unit: "s" },
-      { key: "noiseMix", label: "Noise Mix", min: 0, max: 1, step: 0.05, unit: "" },
-      { key: "filterCutoff", label: "Filter Cutoff", min: 500, max: 12000, step: 100, unit: "Hz" },
-      { key: "filterQ", label: "Filter Q", min: 0.1, max: 15, step: 0.1, unit: "" },
-      { key: "clickVolume", label: "Volume", min: 0, max: 1, step: 0.05, unit: "" },
-      { key: "friction", label: "Friction", min: 0.96, max: 0.998, step: 0.001, unit: "" },
-      { key: "pitchVariation", label: "Pitch Wobble", min: 0, max: 0.5, step: 0.01, unit: "" },
+    var PARAM_SECTIONS = [
+      { key: "osc", title: "OSCILLATOR", params: [
+        { key: "waveform", label: "Waveform", type: "select", options: WAVEFORMS },
+        { key: "clickFreq", label: "Pitch", min: 200, max: 8000, step: 10, unit: "Hz" },
+        { key: "clickDecay", label: "Decay", min: 0.005, max: 0.3, step: 0.005, unit: "s" },
+        { key: "attack", label: "Attack", min: 0, max: 0.05, step: 0.001, unit: "s" },
+        { key: "osc2Waveform", label: "Osc 2 Wave", type: "select", options: WAVEFORMS },
+        { key: "osc2Detune", label: "Osc 2 Detune", min: -24, max: 24, step: 1, unit: "st" },
+        { key: "osc2Mix", label: "Osc 2 Mix", min: 0, max: 1, step: 0.05, unit: "" },
+      ]},
+      { key: "noise", title: "NOISE", params: [
+        { key: "noiseType", label: "Type", type: "select", options: NOISE_TYPES },
+        { key: "noiseMix", label: "Mix", min: 0, max: 1, step: 0.05, unit: "" },
+        { key: "noiseDecay", label: "Decay", min: 0.005, max: 0.2, step: 0.005, unit: "s" },
+      ]},
+      { key: "filter", title: "FILTER", params: [
+        { key: "filterType", label: "Type", type: "select", options: FILTER_TYPES },
+        { key: "filterCutoff", label: "Cutoff", min: 100, max: 16000, step: 50, unit: "Hz" },
+        { key: "filterQ", label: "Resonance", min: 0.1, max: 20, step: 0.1, unit: "" },
+        { key: "filterEnvAmount", label: "Env Sweep", min: 0, max: 8000, step: 100, unit: "Hz" },
+        { key: "filterEnvDecay", label: "Env Decay", min: 0.01, max: 0.5, step: 0.01, unit: "s" },
+      ]},
+      { key: "fx", title: "EFFECTS", params: [
+        { key: "distortion", label: "Distortion", min: 0, max: 1, step: 0.05, unit: "" },
+        { key: "delayTime", label: "Delay Time", min: 0, max: 0.5, step: 0.01, unit: "s" },
+        { key: "delayFeedback", label: "Delay FB", min: 0, max: 0.9, step: 0.05, unit: "" },
+        { key: "delayMix", label: "Delay Mix", min: 0, max: 1, step: 0.05, unit: "" },
+        { key: "reverbDecay", label: "Reverb Size", min: 0, max: 3, step: 0.1, unit: "s" },
+        { key: "reverbMix", label: "Reverb Mix", min: 0, max: 1, step: 0.05, unit: "" },
+      ]},
+      { key: "wheel", title: "WHEEL", params: [
+        { key: "pegCount", label: "Pegs", min: 6, max: 72, step: 1, unit: "" },
+        { key: "clickVolume", label: "Volume", min: 0, max: 1, step: 0.05, unit: "" },
+        { key: "friction", label: "Friction", min: 0.96, max: 0.998, step: 0.001, unit: "" },
+        { key: "pitchVariation", label: "Pitch Wobble", min: 0, max: 0.5, step: 0.01, unit: "" },
+      ]},
     ];
 
     var PRESETS = [
       { name: "Classic TV", p: Object.assign({}, DEFAULTS) },
-      { name: "Ratchet", p: { pegCount: 12, clickFreq: 1200, clickDecay: 0.06, noiseDecay: 0.04, noiseMix: 0.3, filterCutoff: 2000, filterQ: 1.5, clickVolume: 0.9, friction: 0.975, pitchVariation: 0.05 }},
-      { name: "Casino", p: { pegCount: 48, clickFreq: 5500, clickDecay: 0.015, noiseDecay: 0.01, noiseMix: 0.8, filterCutoff: 6000, filterQ: 5, clickVolume: 0.7, friction: 0.992, pitchVariation: 0.25 }},
-      { name: "Wooden", p: { pegCount: 18, clickFreq: 1800, clickDecay: 0.08, noiseDecay: 0.05, noiseMix: 0.4, filterCutoff: 2500, filterQ: 1.0, clickVolume: 0.85, friction: 0.978, pitchVariation: 0.1 }},
+      { name: "Ratchet", p: Object.assign({}, DEFAULTS, {
+        pegCount: 12, waveform: "square", clickFreq: 1200, clickDecay: 0.06, attack: 0,
+        osc2Mix: 0, noiseMix: 0.3, noiseDecay: 0.04,
+        filterType: "lowpass", filterCutoff: 2000, filterQ: 1.5,
+        clickVolume: 0.9, friction: 0.975, pitchVariation: 0.05,
+      })},
+      { name: "Casino", p: Object.assign({}, DEFAULTS, {
+        pegCount: 48, clickFreq: 5500, clickDecay: 0.015,
+        osc2Waveform: "triangle", osc2Detune: 7, osc2Mix: 0.2,
+        noiseMix: 0.8, noiseDecay: 0.01,
+        filterCutoff: 6000, filterQ: 5, filterEnvAmount: 2000, filterEnvDecay: 0.05,
+        reverbDecay: 0.3, reverbMix: 0.15,
+        clickVolume: 0.7, friction: 0.992, pitchVariation: 0.25,
+      })},
+      { name: "Wooden", p: Object.assign({}, DEFAULTS, {
+        pegCount: 18, waveform: "triangle", clickFreq: 1800, clickDecay: 0.08, attack: 0.002,
+        osc2Waveform: "sine", osc2Detune: -12, osc2Mix: 0.15,
+        noiseType: "brown", noiseMix: 0.5, noiseDecay: 0.05,
+        filterType: "lowpass", filterCutoff: 2500, filterQ: 1.0, filterEnvAmount: 1000, filterEnvDecay: 0.08,
+        reverbDecay: 0.2, reverbMix: 0.1,
+        clickVolume: 0.85, friction: 0.978, pitchVariation: 0.1,
+      })},
+      { name: "Metallic", p: Object.assign({}, DEFAULTS, {
+        pegCount: 30, waveform: "sawtooth", clickFreq: 4500, clickDecay: 0.04,
+        osc2Waveform: "sawtooth", osc2Detune: 7, osc2Mix: 0.4,
+        noiseMix: 0.3, noiseDecay: 0.015,
+        filterType: "peaking", filterCutoff: 5000, filterQ: 10, filterEnvAmount: 3000, filterEnvDecay: 0.04,
+        distortion: 0.1, reverbDecay: 0.5, reverbMix: 0.15,
+        clickVolume: 0.7, friction: 0.988, pitchVariation: 0.08,
+      })},
+      { name: "Laser Zap", p: Object.assign({}, DEFAULTS, {
+        waveform: "sawtooth", clickFreq: 6000, clickDecay: 0.12,
+        osc2Waveform: "square", osc2Detune: 12, osc2Mix: 0.3,
+        noiseMix: 0.05, noiseDecay: 0.01,
+        filterType: "lowpass", filterCutoff: 8000, filterQ: 3, filterEnvAmount: 6000, filterEnvDecay: 0.1,
+        distortion: 0.15, delayTime: 0.08, delayFeedback: 0.3, delayMix: 0.25,
+        clickVolume: 0.75, pitchVariation: 0.2,
+      })},
+      { name: "Deep Bass", p: Object.assign({}, DEFAULTS, {
+        pegCount: 16, clickFreq: 400, clickDecay: 0.15, attack: 0.005,
+        osc2Detune: -12, osc2Mix: 0.5,
+        noiseType: "brown", noiseMix: 0.4, noiseDecay: 0.1,
+        filterType: "lowpass", filterCutoff: 800, filterQ: 2, filterEnvAmount: 500, filterEnvDecay: 0.15,
+        distortion: 0.05, reverbDecay: 0.3, reverbMix: 0.1,
+        clickVolume: 0.9, friction: 0.975, pitchVariation: 0.05,
+      })},
+      { name: "Crystal", p: Object.assign({}, DEFAULTS, {
+        pegCount: 36, clickFreq: 7000, clickDecay: 0.2,
+        osc2Detune: 19, osc2Mix: 0.25,
+        noiseMix: 0.05, noiseDecay: 0.005,
+        filterCutoff: 7000, filterQ: 15,
+        delayTime: 0.15, delayFeedback: 0.4, delayMix: 0.3, reverbDecay: 1.5, reverbMix: 0.35,
+        clickVolume: 0.6, friction: 0.99, pitchVariation: 0.02,
+      })},
+      { name: "Industrial", p: Object.assign({}, DEFAULTS, {
+        pegCount: 20, waveform: "square", clickFreq: 2000, clickDecay: 0.05,
+        osc2Waveform: "sawtooth", osc2Detune: 5, osc2Mix: 0.5,
+        noiseMix: 0.7, noiseDecay: 0.06,
+        filterType: "lowpass", filterCutoff: 3500, filterQ: 3, filterEnvAmount: 2000, filterEnvDecay: 0.05,
+        distortion: 0.6, reverbDecay: 0.3, reverbMix: 0.1,
+        clickVolume: 0.85, friction: 0.98, pitchVariation: 0.15,
+      })},
+      { name: "Sci-Fi", p: Object.assign({}, DEFAULTS, {
+        pegCount: 32, waveform: "sawtooth", clickFreq: 3500, clickDecay: 0.08, attack: 0.002,
+        osc2Waveform: "square", osc2Detune: -5, osc2Mix: 0.3,
+        noiseType: "pink", noiseMix: 0.2, noiseDecay: 0.03,
+        filterCutoff: 4000, filterQ: 8, filterEnvAmount: 4000, filterEnvDecay: 0.08,
+        distortion: 0.1, delayTime: 0.2, delayFeedback: 0.5, delayMix: 0.4, reverbDecay: 0.8, reverbMix: 0.2,
+        clickVolume: 0.7, friction: 0.99, pitchVariation: 0.3,
+      })},
+      { name: "Cathedral", p: Object.assign({}, DEFAULTS, {
+        waveform: "sine", clickFreq: 2800, clickDecay: 0.1, attack: 0.003,
+        osc2Mix: 0, noiseMix: 0.1, noiseDecay: 0.02,
+        filterType: "lowpass", filterCutoff: 3000, filterQ: 1,
+        delayTime: 0.12, delayFeedback: 0.3, delayMix: 0.2, reverbDecay: 2.5, reverbMix: 0.6,
+        clickVolume: 0.65, friction: 0.988, pitchVariation: 0.05,
+      })},
+      { name: "Glitch", p: Object.assign({}, DEFAULTS, {
+        pegCount: 60, waveform: "square", clickFreq: 5000, clickDecay: 0.008,
+        osc2Waveform: "sawtooth", osc2Detune: 17, osc2Mix: 0.4,
+        noiseMix: 0.9, noiseDecay: 0.005,
+        filterType: "highpass", filterCutoff: 3000, filterQ: 8, filterEnvAmount: 5000, filterEnvDecay: 0.008,
+        distortion: 0.3, delayTime: 0.05, delayFeedback: 0.6, delayMix: 0.3,
+        clickVolume: 0.7, friction: 0.995, pitchVariation: 0.45,
+      })},
     ];
 
+    // ===== Audio Helpers =====
+    function makeDistortionCurve(amount) {
+      var n = 8192;
+      var curve = new Float32Array(n);
+      var k = amount * 50 + 1;
+      for (var i = 0; i < n; i++) {
+        var x = (i * 2) / n - 1;
+        curve[i] = (Math.PI + k) * x / (Math.PI + k * Math.abs(x));
+      }
+      return curve;
+    }
+
+    function createReverbIR(ctx, decay) {
+      var rt = Math.max(decay, 0.1);
+      var len = Math.ceil(ctx.sampleRate * rt);
+      var buf = ctx.createBuffer(2, len, ctx.sampleRate);
+      var rate = -6.908 / rt;
+      for (var ch = 0; ch < 2; ch++) {
+        var d = buf.getChannelData(ch);
+        for (var i = 0; i < len; i++) {
+          d[i] = (Math.random() * 2 - 1) * Math.exp(rate * i / ctx.sampleRate);
+        }
+      }
+      return buf;
+    }
+
+    function waveAt(type, phase) {
+      switch (type) {
+        case "sine": return Math.sin(2 * Math.PI * phase);
+        case "square": return phase < 0.5 ? 1 : -1;
+        case "sawtooth": return 2 * phase - 1;
+        case "triangle": return 4 * Math.abs(phase - 0.5) - 1;
+        default: return Math.sin(2 * Math.PI * phase);
+      }
+    }
+
+    function pnoise(i) {
+      var x = Math.sin(i * 12.9898 + 78.233) * 43758.5453;
+      return (x - Math.floor(x)) * 2 - 1;
+    }
+
+    function biquadCoeffs(type, cutoff, q, sr) {
+      var w0 = 2 * Math.PI * Math.min(Math.max(cutoff, 20), sr / 2 - 100) / sr;
+      var s0 = Math.sin(w0), c0 = Math.cos(w0);
+      var alpha = s0 / (2 * Math.max(q, 0.001));
+      var b0, b1, b2, a0, a1, a2;
+      switch (type) {
+        case "lowpass":
+          b0 = (1 - c0) / 2; b1 = 1 - c0; b2 = (1 - c0) / 2;
+          a0 = 1 + alpha; a1 = -2 * c0; a2 = 1 - alpha; break;
+        case "highpass":
+          b0 = (1 + c0) / 2; b1 = -(1 + c0); b2 = (1 + c0) / 2;
+          a0 = 1 + alpha; a1 = -2 * c0; a2 = 1 - alpha; break;
+        case "bandpass":
+          b0 = alpha; b1 = 0; b2 = -alpha;
+          a0 = 1 + alpha; a1 = -2 * c0; a2 = 1 - alpha; break;
+        case "notch":
+          b0 = 1; b1 = -2 * c0; b2 = 1;
+          a0 = 1 + alpha; a1 = -2 * c0; a2 = 1 - alpha; break;
+        case "peaking":
+          var A = Math.pow(10, 0.15);
+          b0 = 1 + alpha * A; b1 = -2 * c0; b2 = 1 - alpha * A;
+          a0 = 1 + alpha / A; a1 = -2 * c0; a2 = 1 - alpha / A; break;
+        default:
+          return { b0: 1, b1: 0, b2: 0, a1: 0, a2: 0 };
+      }
+      return { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 };
+    }
+
+    function computePreview(p) {
+      var sr = 44100;
+      var dur = Math.max(p.clickDecay, p.noiseDecay) * 3 + p.attack;
+      var n = Math.min(Math.ceil(sr * dur), sr);
+      if (n < 64) n = 64;
+      var out = new Float32Array(n);
+      var dt = 1 / sr;
+      var toneMix = 1 - p.noiseMix;
+      var freq = p.clickFreq;
+      var ph1 = 0, ph2 = 0;
+      var dm = Math.pow(2, p.osc2Detune / 12);
+
+      for (var i = 0; i < n; i++) {
+        var t = i * dt;
+        var s = 0;
+        var sweep = 1 - 0.5 * Math.min(t / Math.max(p.clickDecay, 0.001), 1);
+        ph1 += freq * sweep * dt; ph1 -= Math.floor(ph1);
+        ph2 += freq * dm * sweep * dt; ph2 -= Math.floor(ph2);
+        var ta = Math.max(t - p.attack, 0);
+        var tau = Math.max(p.clickDecay * 0.3, 0.001);
+        var env1 = Math.exp(-ta / tau);
+        var env2 = Math.exp(-ta / (tau * 0.5));
+        if (toneMix > 0) {
+          s += waveAt(p.waveform, ph1) * env1 * toneMix * 0.7;
+          if (p.osc2Mix > 0) s += waveAt(p.osc2Waveform, ph2) * env2 * p.osc2Mix * toneMix * 0.5;
+        }
+        if (p.noiseMix > 0.01) {
+          var nEnv = Math.exp(-ta / Math.max(p.noiseDecay * 0.4, 0.001));
+          s += pnoise(i) * nEnv * p.noiseMix * 0.9;
+        }
+        if (p.attack > 0 && t < p.attack) s *= t / p.attack;
+        out[i] = s * p.clickVolume;
+      }
+
+      // Apply biquad filter
+      var x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+      var filtered = new Float32Array(n);
+      for (var i = 0; i < n; i++) {
+        var t = i * dt;
+        var fc = p.filterCutoff + p.filterEnvAmount * Math.exp(-t / Math.max(p.filterEnvDecay * 0.3, 0.001));
+        var co = biquadCoeffs(p.filterType, fc, p.filterQ, sr);
+        var x0 = out[i];
+        filtered[i] = co.b0 * x0 + co.b1 * x1 + co.b2 * x2 - co.a1 * y1 - co.a2 * y2;
+        x2 = x1; x1 = x0; y2 = y1; y1 = filtered[i];
+        if (filtered[i] > 1) filtered[i] = 1;
+        if (filtered[i] < -1) filtered[i] = -1;
+      }
+      return filtered;
+    }
+
+    // ===== Main Component =====
     function WheelSynth() {
-      var _params = useState(Object.assign({}, DEFAULTS));
-      var params = _params[0], setParams = _params[1];
-      var _angle = useState(0);
-      var angle = _angle[0], setAngle = _angle[1];
-      var _drag = useState(false);
-      var isDragging = _drag[0], setIsDragging = _drag[1];
+      var _p = useState(Object.assign({}, DEFAULTS));
+      var params = _p[0], setParams = _p[1];
+      var _a = useState(0);
+      var angle = _a[0], setAngle = _a[1];
+      var _d = useState(false);
+      var isDragging = _d[0], setIsDragging = _d[1];
       var _dart = useState(false);
       var showDart = _dart[0], setShowDart = _dart[1];
       var _spin = useState(false);
       var isSpinning = _spin[0], setIsSpinning = _spin[1];
       var _audio = useState(false);
       var audioReady = _audio[0], setAudioReady = _audio[1];
+      var _sec = useState({ osc: true, noise: true, filter: true, fx: false, wheel: true });
+      var openSections = _sec[0], setOpenSections = _sec[1];
 
       var audioCtxRef = useRef(null);
+      var audioGraphRef = useRef(null);
       var wheelRef = useRef(null);
+      var scopeRef = useRef(null);
       var animRef = useRef(null);
       var angleRef = useRef(0);
       var velocityRef = useRef(0);
@@ -72,13 +315,70 @@
       var lastDragRef = useRef({ angle: 0, time: 0 });
       var paramsRef = useRef(params);
       var isDraggingRef = useRef(false);
+      var previewRef = useRef(null);
+      var previewDirtyRef = useRef(true);
 
-      useEffect(function() { paramsRef.current = params; }, [params]);
+      useEffect(function() { paramsRef.current = params; previewDirtyRef.current = true; }, [params]);
       useEffect(function() { isDraggingRef.current = isDragging; }, [isDragging]);
+
+      // ===== Audio Graph Setup =====
+      function setupAudioGraph(ctx) {
+        var analyser = ctx.createAnalyser();
+        analyser.fftSize = 2048;
+        analyser.smoothingTimeConstant = 0.3;
+
+        var outputBus = ctx.createGain();
+        outputBus.gain.setValueAtTime(1, ctx.currentTime);
+        outputBus.connect(analyser);
+        analyser.connect(ctx.destination);
+
+        var masterBus = ctx.createGain();
+        masterBus.gain.setValueAtTime(1, ctx.currentTime);
+
+        var waveshaper = ctx.createWaveShaper();
+        waveshaper.curve = makeDistortionCurve(0);
+        waveshaper.oversample = "4x";
+        masterBus.connect(waveshaper);
+        waveshaper.connect(outputBus);
+
+        var delayNode = ctx.createDelay(1.0);
+        delayNode.delayTime.setValueAtTime(0.001, ctx.currentTime);
+        var delayFb = ctx.createGain();
+        delayFb.gain.setValueAtTime(0, ctx.currentTime);
+        var delayWet = ctx.createGain();
+        delayWet.gain.setValueAtTime(0, ctx.currentTime);
+        waveshaper.connect(delayNode);
+        delayNode.connect(delayFb);
+        delayFb.connect(delayNode);
+        delayNode.connect(delayWet);
+        delayWet.connect(outputBus);
+
+        var convolver = ctx.createConvolver();
+        convolver.buffer = createReverbIR(ctx, 0.1);
+        var reverbWet = ctx.createGain();
+        reverbWet.gain.setValueAtTime(0, ctx.currentTime);
+        waveshaper.connect(convolver);
+        convolver.connect(reverbWet);
+        reverbWet.connect(outputBus);
+
+        return { analyser: analyser, masterBus: masterBus, outputBus: outputBus,
+          waveshaper: waveshaper, delayNode: delayNode, delayFb: delayFb,
+          delayWet: delayWet, convolver: convolver, reverbWet: reverbWet };
+      }
 
       var ensureAudio = useCallback(function() {
         if (!audioCtxRef.current) {
           audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
+          audioGraphRef.current = setupAudioGraph(audioCtxRef.current);
+          // Apply current params to graph
+          var g = audioGraphRef.current;
+          var p = paramsRef.current;
+          g.waveshaper.curve = makeDistortionCurve(p.distortion);
+          g.delayNode.delayTime.setValueAtTime(Math.max(p.delayTime, 0.001), audioCtxRef.current.currentTime);
+          g.delayFb.gain.setValueAtTime(p.delayFeedback, audioCtxRef.current.currentTime);
+          g.delayWet.gain.setValueAtTime(p.delayTime > 0 ? p.delayMix : 0, audioCtxRef.current.currentTime);
+          if (p.reverbDecay > 0) g.convolver.buffer = createReverbIR(audioCtxRef.current, p.reverbDecay);
+          g.reverbWet.gain.setValueAtTime(p.reverbDecay > 0 ? p.reverbMix : 0, audioCtxRef.current.currentTime);
         }
         var ctx = audioCtxRef.current;
         if (ctx.state === "suspended") {
@@ -89,9 +389,37 @@
         return ctx;
       }, []);
 
+      // Update effects when params change
+      useEffect(function() {
+        var g = audioGraphRef.current;
+        if (!g) return;
+        g.waveshaper.curve = makeDistortionCurve(params.distortion);
+      }, [params.distortion]);
+
+      useEffect(function() {
+        var g = audioGraphRef.current;
+        if (!g || !audioCtxRef.current) return;
+        var now = audioCtxRef.current.currentTime;
+        g.delayNode.delayTime.setValueAtTime(Math.max(params.delayTime, 0.001), now);
+        g.delayFb.gain.setValueAtTime(params.delayFeedback, now);
+        g.delayWet.gain.setValueAtTime(params.delayTime > 0 ? params.delayMix : 0, now);
+      }, [params.delayTime, params.delayFeedback, params.delayMix]);
+
+      useEffect(function() {
+        var g = audioGraphRef.current;
+        if (!g || !audioCtxRef.current) return;
+        var now = audioCtxRef.current.currentTime;
+        if (params.reverbDecay > 0) {
+          try { g.convolver.buffer = createReverbIR(audioCtxRef.current, params.reverbDecay); } catch(ex) {}
+        }
+        g.reverbWet.gain.setValueAtTime(params.reverbDecay > 0 ? params.reverbMix : 0, now);
+      }, [params.reverbDecay, params.reverbMix]);
+
+      // ===== Play Click =====
       var playClick = useCallback(function(speed) {
         var ctx = audioCtxRef.current;
-        if (!ctx || ctx.state !== "running") return;
+        var graph = audioGraphRef.current;
+        if (!ctx || ctx.state !== "running" || !graph) return;
         var p = paramsRef.current;
         var now = ctx.currentTime;
         var speedFactor = Math.min(Math.abs(speed) / 12, 1);
@@ -99,64 +427,171 @@
         var variation = 1 + (Math.random() - 0.5) * p.pitchVariation;
         var freq = p.clickFreq * variation;
         var masterVol = p.clickVolume * intensity;
+        var maxDur = Math.max(p.clickDecay, p.noiseDecay) * 3 + p.attack + 0.1;
 
-        var master = ctx.createGain();
-        master.gain.setValueAtTime(masterVol, now);
-        master.connect(ctx.destination);
+        // Per-click master gain with attack
+        var clickMaster = ctx.createGain();
+        if (p.attack > 0.001) {
+          clickMaster.gain.setValueAtTime(0, now);
+          clickMaster.gain.linearRampToValueAtTime(masterVol, now + p.attack);
+        } else {
+          clickMaster.gain.setValueAtTime(masterVol, now);
+        }
+        clickMaster.connect(graph.masterBus);
+
+        // Filter for entire click
+        var filter = ctx.createBiquadFilter();
+        filter.type = p.filterType;
+        if (p.filterEnvAmount > 0) {
+          filter.frequency.setValueAtTime(p.filterCutoff + p.filterEnvAmount, now);
+          filter.frequency.setTargetAtTime(p.filterCutoff, now + 0.001, Math.max(p.filterEnvDecay * 0.3, 0.001));
+        } else {
+          filter.frequency.setValueAtTime(p.filterCutoff, now);
+        }
+        filter.Q.setValueAtTime(Math.max(p.filterQ, 0.1), now);
+        filter.connect(clickMaster);
 
         var toneMix = 1.0 - p.noiseMix;
-        if (toneMix > 0) {
-          var sine = ctx.createOscillator();
-          var sineGain = ctx.createGain();
-          sine.type = "sine";
-          sine.frequency.setValueAtTime(freq, now);
-          sine.frequency.setValueAtTime(freq * 0.5, now + p.clickDecay * 0.8);
-          sineGain.gain.setValueAtTime(toneMix * 0.7, now);
-          sineGain.gain.setTargetAtTime(0, now + 0.002, p.clickDecay * 0.3);
-          sine.connect(sineGain);
-          sineGain.connect(master);
-          sine.start(now);
-          sine.stop(now + p.clickDecay + 0.05);
+        var attackOffset = Math.max(p.attack, 0.002);
 
-          var sq = ctx.createOscillator();
-          var sqGain = ctx.createGain();
-          sq.type = "square";
-          sq.frequency.setValueAtTime(freq * 1.5, now);
-          sq.frequency.setTargetAtTime(freq * 0.2, now, p.clickDecay * 0.2);
-          sqGain.gain.setValueAtTime(toneMix * 0.35, now);
-          sqGain.gain.setTargetAtTime(0, now + 0.001, p.clickDecay * 0.15);
-          sq.connect(sqGain);
-          sqGain.connect(master);
-          sq.start(now);
-          sq.stop(now + p.clickDecay + 0.05);
+        // Oscillator 1
+        if (toneMix > 0) {
+          var osc1 = ctx.createOscillator();
+          var osc1Gain = ctx.createGain();
+          osc1.type = p.waveform;
+          osc1.frequency.setValueAtTime(freq, now);
+          osc1.frequency.setValueAtTime(freq * 0.5, now + p.clickDecay * 0.8);
+          osc1Gain.gain.setValueAtTime(toneMix * 0.7, now);
+          osc1Gain.gain.setTargetAtTime(0, now + attackOffset, p.clickDecay * 0.3);
+          osc1.connect(osc1Gain);
+          osc1Gain.connect(filter);
+          osc1.start(now);
+          osc1.stop(now + maxDur);
+
+          // Oscillator 2
+          if (p.osc2Mix > 0) {
+            var osc2 = ctx.createOscillator();
+            var osc2Gain = ctx.createGain();
+            var detuneMult = Math.pow(2, p.osc2Detune / 12);
+            osc2.type = p.osc2Waveform;
+            osc2.frequency.setValueAtTime(freq * detuneMult, now);
+            osc2.frequency.setTargetAtTime(freq * detuneMult * 0.2, now, p.clickDecay * 0.2);
+            osc2Gain.gain.setValueAtTime(p.osc2Mix * toneMix * 0.5, now);
+            osc2Gain.gain.setTargetAtTime(0, now + Math.max(p.attack, 0.001), p.clickDecay * 0.15);
+            osc2.connect(osc2Gain);
+            osc2Gain.connect(filter);
+            osc2.start(now);
+            osc2.stop(now + maxDur);
+          }
         }
 
+        // Noise
         if (p.noiseMix > 0.01) {
           var bufLen = Math.max(1024, Math.ceil(ctx.sampleRate * p.noiseDecay * 3));
           var buf = ctx.createBuffer(1, bufLen, ctx.sampleRate);
           var d = buf.getChannelData(0);
-          for (var i = 0; i < bufLen; i++) d[i] = Math.random() * 2 - 1;
-
+          switch (p.noiseType) {
+            case "pink":
+              var b0=0,b1=0,b2=0,b3=0,b4=0,b5=0,b6=0;
+              for (var i = 0; i < bufLen; i++) {
+                var w = Math.random()*2-1;
+                b0=0.99886*b0+w*0.0555179; b1=0.99332*b1+w*0.0750759;
+                b2=0.96900*b2+w*0.1538520; b3=0.86650*b3+w*0.3104856;
+                b4=0.55000*b4+w*0.5329522; b5=-0.7616*b5-w*0.0168980;
+                d[i]=(b0+b1+b2+b3+b4+b5+b6+w*0.5362)*0.11; b6=w*0.115926;
+              }
+              break;
+            case "brown":
+              var last = 0;
+              for (var i = 0; i < bufLen; i++) {
+                var w = Math.random()*2-1;
+                last = (last + 0.02*w) / 1.02;
+                d[i] = last * 3.5;
+              }
+              break;
+            default:
+              for (var i = 0; i < bufLen; i++) d[i] = Math.random()*2-1;
+          }
           var noise = ctx.createBufferSource();
           noise.buffer = buf;
-
-          var nfilt = ctx.createBiquadFilter();
-          nfilt.type = "bandpass";
-          nfilt.frequency.setValueAtTime(p.filterCutoff, now);
-          nfilt.Q.setValueAtTime(Math.max(p.filterQ * 0.5, 0.5), now);
-
           var nGain = ctx.createGain();
           nGain.gain.setValueAtTime(p.noiseMix * 0.9, now);
-          nGain.gain.setTargetAtTime(0, now + 0.002, p.noiseDecay * 0.4);
-
-          noise.connect(nfilt);
-          nfilt.connect(nGain);
-          nGain.connect(master);
+          nGain.gain.setTargetAtTime(0, now + attackOffset, p.noiseDecay * 0.4);
+          noise.connect(nGain);
+          nGain.connect(filter);
           noise.start(now);
-          noise.stop(now + p.noiseDecay * 3 + 0.05);
+          noise.stop(now + maxDur);
         }
       }, []);
 
+      // ===== Oscilloscope =====
+      function drawScope() {
+        var canvas = scopeRef.current;
+        if (!canvas) return;
+        var c = canvas.getContext("2d");
+        var w = canvas.width, h = canvas.height;
+
+        c.fillStyle = "#0c0b14";
+        c.fillRect(0, 0, w, h);
+
+        // Grid
+        c.strokeStyle = "#1a1a2e";
+        c.lineWidth = 0.5;
+        for (var i = 1; i < 4; i++) { c.beginPath(); c.moveTo(0, h*i/4); c.lineTo(w, h*i/4); c.stroke(); }
+        for (var i = 1; i < 8; i++) { c.beginPath(); c.moveTo(w*i/8, 0); c.lineTo(w*i/8, h); c.stroke(); }
+        c.strokeStyle = "#2a2a3e"; c.lineWidth = 1;
+        c.beginPath(); c.moveTo(0, h/2); c.lineTo(w, h/2); c.stroke();
+
+        var graph = audioGraphRef.current;
+        var live = false;
+        var ad = null;
+        if (graph && graph.analyser) {
+          var bl = graph.analyser.frequencyBinCount;
+          ad = new Uint8Array(bl);
+          graph.analyser.getByteTimeDomainData(ad);
+          for (var i = 0; i < bl; i += 4) {
+            if (Math.abs(ad[i] - 128) > 2) { live = true; break; }
+          }
+        }
+
+        c.lineWidth = 2;
+        c.strokeStyle = "#f5c542";
+        c.shadowColor = "#f5c542";
+        c.shadowBlur = 6;
+        c.beginPath();
+
+        if (live && ad) {
+          var step = ad.length / w;
+          for (var i = 0; i < w; i++) {
+            var idx = Math.floor(i * step);
+            var v = (ad[idx] - 128) / 128;
+            var y = (1 - v) * h / 2;
+            if (i === 0) c.moveTo(i, y); else c.lineTo(i, y);
+          }
+        } else {
+          if (previewDirtyRef.current || !previewRef.current) {
+            previewRef.current = computePreview(paramsRef.current);
+            previewDirtyRef.current = false;
+          }
+          var samples = previewRef.current;
+          var step = samples.length / w;
+          for (var i = 0; i < w; i++) {
+            var idx = Math.min(Math.floor(i * step), samples.length - 1);
+            var y = (1 - samples[idx]) * h / 2;
+            if (i === 0) c.moveTo(i, y); else c.lineTo(i, y);
+          }
+        }
+        c.stroke();
+        c.shadowBlur = 0;
+
+        // Mode label
+        c.font = "9px 'JetBrains Mono'";
+        c.fillStyle = live ? "#ff6b35" : "#665e4d";
+        c.textAlign = "right";
+        c.fillText(live ? "LIVE" : "PREVIEW", w - 8, 12);
+      }
+
+      // ===== Wheel Interaction =====
       var getAngleFromEvent = useCallback(function(ev) {
         var rect = wheelRef.current.getBoundingClientRect();
         var cx = rect.left + rect.width / 2;
@@ -194,57 +629,43 @@
         var delta = a - lastDragRef.current.angle;
         if (delta > Math.PI) delta -= 2 * Math.PI;
         if (delta < -Math.PI) delta += 2 * Math.PI;
-
         angleRef.current += delta;
         setAngle(angleRef.current);
-
         var now = performance.now();
         var dt = (now - lastDragRef.current.time) / 1000;
-        if (dt > 0.001) {
-          velocityRef.current = delta / dt;
-        }
+        if (dt > 0.001) velocityRef.current = delta / dt;
         lastDragRef.current = { angle: a, time: now };
-
-        if (checkPeg()) {
-          playClick(velocityRef.current || 5);
-        }
+        if (checkPeg()) playClick(velocityRef.current || 5);
       }, [getAngleFromEvent, checkPeg, playClick]);
 
       var handlePointerUp = useCallback(function() {
         if (!isDraggingRef.current) return;
         isDraggingRef.current = false;
         setIsDragging(false);
-        if (Math.abs(velocityRef.current) > 0.3) {
-          setIsSpinning(true);
-        }
+        if (Math.abs(velocityRef.current) > 0.3) setIsSpinning(true);
       }, []);
 
+      // ===== Animation Loop =====
       useEffect(function() {
         var running = true;
         var lastTime = performance.now();
-
         function tick(now) {
           if (!running) return;
           var dt = Math.min((now - lastTime) / 1000, 0.05);
           lastTime = now;
-
           if (!isDraggingRef.current && Math.abs(velocityRef.current) > 0.05) {
             var frictionPerFrame = Math.pow(paramsRef.current.friction, dt * 60);
             velocityRef.current *= frictionPerFrame;
             angleRef.current += velocityRef.current * dt;
             setAngle(angleRef.current);
-
-            if (checkPeg()) {
-              playClick(velocityRef.current);
-            }
+            if (checkPeg()) playClick(velocityRef.current);
           } else if (!isDraggingRef.current && Math.abs(velocityRef.current) <= 0.05) {
             velocityRef.current = 0;
             setIsSpinning(false);
           }
-
+          drawScope();
           animRef.current = requestAnimationFrame(tick);
         }
-
         animRef.current = requestAnimationFrame(tick);
         return function() { running = false; cancelAnimationFrame(animRef.current); };
       }, [checkPeg, playClick]);
@@ -267,10 +688,11 @@
         };
       }, []);
 
+      // ===== Helpers =====
       function updateParam(key, val) {
-        setParams(function(p) {
-          var next = Object.assign({}, p);
-          next[key] = parseFloat(val);
+        setParams(function(prev) {
+          var next = Object.assign({}, prev);
+          next[key] = STRING_PARAMS.indexOf(key) >= 0 ? val : parseFloat(val);
           return next;
         });
       }
@@ -280,69 +702,135 @@
         setTimeout(function() { playClick(8); }, 100);
       }
 
+      function toggleSection(key) {
+        setOpenSections(function(prev) {
+          var next = Object.assign({}, prev);
+          next[key] = !next[key];
+          return next;
+        });
+      }
+
+      function randomize() {
+        var np = {};
+        PARAM_SECTIONS.forEach(function(sec) {
+          sec.params.forEach(function(param) {
+            if (param.type === "select") {
+              np[param.key] = param.options[Math.floor(Math.random() * param.options.length)];
+            } else {
+              var range = param.max - param.min;
+              var steps = Math.round(range / param.step);
+              np[param.key] = Math.round((param.min + Math.floor(Math.random() * (steps + 1)) * param.step) * 1000) / 1000;
+            }
+          });
+        });
+        setParams(np);
+      }
+
       function generateDart() {
         var p = params;
-        return "// Flutter Wheel of Fortune Click-Clack Synthesizer\n" +
-"// Generated by Wheel Synth\n" +
-"// Requires: flutter_soloud or audioplayers + raw PCM generation\n\n" +
+        return "// Flutter Wheel Synth - Click-Clack Synthesizer\n" +
+"// Generated by Wheel Synth\n\n" +
 "import 'dart:math';\nimport 'dart:typed_data';\n\n" +
 "class WheelClickSynth {\n" +
-"  static const int pegCount = " + p.pegCount + ";\n" +
+"  // Oscillator\n" +
+"  static const String waveform = '" + p.waveform + "';\n" +
 "  static const double clickFreqHz = " + p.clickFreq + ".0;\n" +
 "  static const double clickDecaySec = " + p.clickDecay + ";\n" +
-"  static const double noiseDecaySec = " + p.noiseDecay + ";\n" +
+"  static const double attackSec = " + p.attack + ";\n" +
+"  static const String osc2Waveform = '" + p.osc2Waveform + "';\n" +
+"  static const double osc2Detune = " + p.osc2Detune + ".0;\n" +
+"  static const double osc2Mix = " + p.osc2Mix + ";\n" +
+"  // Noise\n" +
+"  static const String noiseType = '" + p.noiseType + "';\n" +
 "  static const double noiseMix = " + p.noiseMix + ";\n" +
+"  static const double noiseDecaySec = " + p.noiseDecay + ";\n" +
+"  // Filter\n" +
+"  static const String filterType = '" + p.filterType + "';\n" +
 "  static const double filterCutoffHz = " + p.filterCutoff + ".0;\n" +
 "  static const double filterQ = " + p.filterQ + ";\n" +
+"  static const double filterEnvAmount = " + p.filterEnvAmount + ".0;\n" +
+"  static const double filterEnvDecay = " + p.filterEnvDecay + ";\n" +
+"  // Effects (implement in your audio engine as needed)\n" +
+"  // distortion: " + p.distortion + "\n" +
+"  // delay: " + p.delayTime + "s, feedback: " + p.delayFeedback + ", mix: " + p.delayMix + "\n" +
+"  // reverb: " + p.reverbDecay + "s, mix: " + p.reverbMix + "\n" +
+"  // Wheel\n" +
+"  static const int pegCount = " + p.pegCount + ";\n" +
 "  static const double clickVolume = " + p.clickVolume + ";\n" +
 "  static const double friction = " + p.friction + ";\n" +
 "  static const double pitchVariation = " + p.pitchVariation + ";\n\n" +
 "  static const int sampleRate = 44100;\n" +
 "  final Random _rng = Random();\n\n" +
+"  double _waveform(String type, double phase) {\n" +
+"    switch (type) {\n" +
+"      case 'sine': return sin(2.0 * pi * phase);\n" +
+"      case 'square': return phase < 0.5 ? 1.0 : -1.0;\n" +
+"      case 'sawtooth': return 2.0 * phase - 1.0;\n" +
+"      case 'triangle': return 4.0 * (phase - 0.5).abs() - 1.0;\n" +
+"      default: return sin(2.0 * pi * phase);\n" +
+"    }\n" +
+"  }\n\n" +
 "  Float32List generateClick({double speedFactor = 0.8}) {\n" +
-"    final int totalSamples = (sampleRate * max(clickDecaySec, noiseDecaySec) * 3).ceil();\n" +
+"    final dur = max(clickDecaySec, noiseDecaySec) * 3 + attackSec;\n" +
+"    final int totalSamples = (sampleRate * dur).ceil();\n" +
 "    final samples = Float32List(totalSamples);\n" +
 "    final variation = 1.0 + (_rng.nextDouble() - 0.5) * pitchVariation;\n" +
 "    final freq = clickFreqHz * variation;\n" +
 "    final vol = clickVolume * (0.5 + 0.5 * speedFactor);\n" +
-"    final toneMix = 1.0 - noiseMix;\n\n" +
+"    final toneMix = 1.0 - noiseMix;\n" +
+"    final detuneMult = pow(2.0, osc2Detune / 12.0).toDouble();\n" +
+"    double ph1 = 0, ph2 = 0;\n" +
+"    final dt = 1.0 / sampleRate;\n\n" +
 "    for (int i = 0; i < totalSamples; i++) {\n" +
 "      final t = i / sampleRate;\n" +
-"      double sample = 0.0;\n\n" +
-"      if (t < clickDecaySec * 2 && toneMix > 0) {\n" +
-"        final tau = clickDecaySec * 0.3;\n" +
-"        final envTone = exp(-t / tau);\n" +
-"        final currentFreq = freq * (1.0 - 0.5 * (t / clickDecaySec).clamp(0.0, 1.0));\n" +
-"        sample += sin(2.0 * pi * currentFreq * t) * envTone * toneMix * 0.7;\n" +
-"        final sqEnv = exp(-t / (tau * 0.5));\n" +
-"        final sqPhase = sin(2.0 * pi * freq * 1.5 * t);\n" +
-"        sample += (sqPhase >= 0 ? 1.0 : -1.0) * sqEnv * toneMix * 0.35;\n" +
+"      double sample = 0.0;\n" +
+"      final sweep = 1.0 - 0.5 * (t / clickDecaySec).clamp(0.0, 1.0);\n" +
+"      ph1 += freq * sweep * dt; ph1 -= ph1.floor();\n" +
+"      ph2 += freq * detuneMult * sweep * dt; ph2 -= ph2.floor();\n" +
+"      final ta = max(t - attackSec, 0.0);\n" +
+"      final tau = clickDecaySec * 0.3;\n\n" +
+"      if (toneMix > 0) {\n" +
+"        final env1 = exp(-ta / tau);\n" +
+"        sample += _waveform(waveform, ph1) * env1 * toneMix * 0.7;\n" +
+"        if (osc2Mix > 0) {\n" +
+"          final env2 = exp(-ta / (tau * 0.5));\n" +
+"          sample += _waveform(osc2Waveform, ph2) * env2 * osc2Mix * toneMix * 0.5;\n" +
+"        }\n" +
 "      }\n\n" +
 "      if (t < noiseDecaySec * 3 && noiseMix > 0.01) {\n" +
-"        final nTau = noiseDecaySec * 0.4;\n" +
-"        final envNoise = exp(-t / nTau);\n" +
-"        final noise = (_rng.nextDouble() * 2.0 - 1.0);\n" +
-"        sample += noise * envNoise * noiseMix * 0.9;\n" +
+"        final nEnv = exp(-ta / (noiseDecaySec * 0.4));\n" +
+"        final noise = _rng.nextDouble() * 2.0 - 1.0;\n" +
+"        sample += noise * nEnv * noiseMix * 0.9;\n" +
 "      }\n\n" +
+"      if (attackSec > 0 && t < attackSec) sample *= t / attackSec;\n" +
 "      samples[i] = (sample * vol).clamp(-1.0, 1.0);\n" +
 "    }\n\n" +
-"    return _applyBandpass(samples, filterCutoffHz, filterQ);\n" +
+"    return _applyBiquad(samples, filterType, filterCutoffHz, filterQ);\n" +
 "  }\n\n" +
-"  Float32List _applyBandpass(Float32List input, double cutoff, double q) {\n" +
+"  Float32List _applyBiquad(Float32List input, String type, double cutoff, double q) {\n" +
 "    final output = Float32List(input.length);\n" +
 "    final w0 = 2.0 * pi * cutoff / sampleRate;\n" +
-"    final alpha = sin(w0) / (2.0 * max(q * 0.5, 0.5));\n" +
-"    final b0 = alpha;\n" +
-"    final b2 = -alpha;\n" +
-"    final a0 = 1.0 + alpha;\n" +
-"    final a1 = -2.0 * cos(w0);\n" +
-"    final a2 = 1.0 - alpha;\n\n" +
-"    double x1 = 0, x2 = 0, y1 = 0, y2 = 0;\n" +
+"    final alpha = sin(w0) / (2.0 * max(q, 0.001));\n" +
+"    double b0, b1, b2, a0, a1, a2;\n" +
+"    switch (type) {\n" +
+"      case 'lowpass':\n" +
+"        b0=(1-cos(w0))/2; b1=1-cos(w0); b2=(1-cos(w0))/2;\n" +
+"        a0=1+alpha; a1=-2*cos(w0); a2=1-alpha; break;\n" +
+"      case 'highpass':\n" +
+"        b0=(1+cos(w0))/2; b1=-(1+cos(w0)); b2=(1+cos(w0))/2;\n" +
+"        a0=1+alpha; a1=-2*cos(w0); a2=1-alpha; break;\n" +
+"      case 'notch':\n" +
+"        b0=1; b1=-2*cos(w0); b2=1;\n" +
+"        a0=1+alpha; a1=-2*cos(w0); a2=1-alpha; break;\n" +
+"      default: // bandpass\n" +
+"        b0=alpha; b1=0; b2=-alpha;\n" +
+"        a0=1+alpha; a1=-2*cos(w0); a2=1-alpha;\n" +
+"    }\n" +
+"    double x1=0,x2=0,y1=0,y2=0;\n" +
 "    for (int i = 0; i < input.length; i++) {\n" +
 "      final x0 = input[i];\n" +
-"      output[i] = ((b0 * x0 + b2 * x2 - a1 * y1 - a2 * y2) / a0).clamp(-1.0, 1.0);\n" +
-"      x2 = x1; x1 = x0;\n" +
-"      y2 = y1; y1 = output[i];\n" +
+"      output[i] = ((b0*x0+b1*x1+b2*x2-a1*y1-a2*y2)/a0).clamp(-1.0,1.0);\n" +
+"      x2=x1; x1=x0; y2=y1; y1=output[i];\n" +
 "    }\n" +
 "    return output;\n" +
 "  }\n\n" +
@@ -381,10 +869,16 @@
 "}\n";
       }
 
+      // ===== Render Helpers =====
+      var rowStyle = { display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: "#0f0e17" };
+      var lblStyle = { fontSize: 11, color: "#665e4d", minWidth: 90, letterSpacing: 0.5, textTransform: "uppercase" };
+      var valStyle = { fontSize: 11, color: "#f5c542", minWidth: 52, textAlign: "right", fontVariantNumeric: "tabular-nums" };
+      var selStyle = { flex: 1, background: "#0a0a0f", border: "1px solid #2a2630", color: "#f5c542", padding: "4px 8px", borderRadius: 3, fontFamily: "'JetBrains Mono', monospace", fontSize: 11, cursor: "pointer", outline: "none" };
+      var btnStyle = { padding: "6px 14px", background: "transparent", border: "1px solid #2a2630", borderRadius: 4, color: "#998e75", fontSize: 11, cursor: "pointer", letterSpacing: 1, textTransform: "uppercase" };
+
+      // ===== Render =====
       var pegs = [];
-      for (var i = 0; i < params.pegCount; i++) {
-        pegs.push((i / params.pegCount) * 360);
-      }
+      for (var i = 0; i < params.pegCount; i++) pegs.push((i / params.pegCount) * 360);
 
       var speedDisplay = Math.abs(velocityRef.current).toFixed(1);
 
@@ -400,6 +894,8 @@
         fontFamily: "'JetBrains Mono', 'Fira Code', monospace", overflow: "auto",
       }},
         e("div", { style: { maxWidth: 900, margin: "0 auto", padding: "24px 16px" } },
+
+          // Title
           e("div", { style: { textAlign: "center", marginBottom: 24 } },
             e("h1", { style: {
               fontFamily: "'Outfit', sans-serif", fontWeight: 900,
@@ -413,6 +909,7 @@
 
           e("div", { style: { display: "flex", flexDirection: "column", gap: 24, alignItems: "center" } },
 
+            // Audio enable
             !audioReady && e("button", {
               onClick: function() { ensureAudio(); setTimeout(function() { playClick(8); }, 150); },
               style: {
@@ -422,7 +919,9 @@
               }
             }, "TAP TO ENABLE AUDIO"),
 
+            // Wheel
             e("div", { style: { position: "relative", width: "min(320px, 80vw)", height: "min(320px, 80vw)" } },
+              // Dart indicator
               e("div", { style: {
                 position: "absolute", top: -8, left: "50%", transform: "translateX(-50%)", zIndex: 10,
                 width: 0, height: 0,
@@ -432,14 +931,11 @@
                 transition: "border-top-color 0.2s, filter 0.2s",
               }}),
 
+              // Wheel circle
               e("div", {
                 ref: wheelRef,
-                onMouseDown: handlePointerDown,
-                onMouseMove: handlePointerMove,
-                onMouseUp: handlePointerUp,
-                onTouchStart: handlePointerDown,
-                onTouchMove: handlePointerMove,
-                onTouchEnd: handlePointerUp,
+                onMouseDown: handlePointerDown, onMouseMove: handlePointerMove, onMouseUp: handlePointerUp,
+                onTouchStart: handlePointerDown, onTouchMove: handlePointerMove, onTouchEnd: handlePointerUp,
                 style: {
                   width: "100%", height: "100%", borderRadius: "50%",
                   background: "conic-gradient(from " + angle + "rad, " + conicGrad + ")",
@@ -466,7 +962,7 @@
                     }})
                   );
                 }),
-
+                // Center hub
                 e("div", { style: {
                   position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
                   width: 48, height: 48, borderRadius: "50%",
@@ -481,70 +977,114 @@
                 )
               ),
 
+              // Speed display
               e("div", { style: {
                 position: "absolute", bottom: -28, left: "50%", transform: "translateX(-50%)",
                 fontSize: 11, color: "#665e4d", letterSpacing: 2, whiteSpace: "nowrap",
               }}, isSpinning ? "\u25B8 " + speedDisplay + " rad/s" : isDragging ? "\u25C9 DRAGGING" : "SWIPE TO SPIN")
             ),
 
-            e("button", {
-              onClick: testClick,
-              style: {
-                padding: "6px 16px", background: "transparent",
-                border: "1px solid #2a2630", borderRadius: 4,
-                color: "#998e75", fontSize: 11, cursor: "pointer", letterSpacing: 1,
-              }
-            }, "\u25B6 TEST CLICK"),
+            // Test click
+            e("button", { onClick: testClick, style: btnStyle }, "\u25B6 TEST CLICK"),
 
-            e("div", { style: {
-              width: "100%", maxWidth: 560,
-              display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))",
-              gap: "2px", background: "#16151e", borderRadius: 8,
-              overflow: "hidden", border: "1px solid #1e1d28",
-            }},
-              PARAMS.map(function(param) {
-                return e("div", { key: param.key, style: {
-                  display: "flex", alignItems: "center", gap: 10,
-                  padding: "10px 14px", background: "#0f0e17",
-                }},
-                  e("label", { style: {
-                    fontSize: 11, color: "#665e4d", minWidth: 90,
-                    letterSpacing: 0.5, textTransform: "uppercase",
-                  }}, param.label),
-                  e("input", {
-                    type: "range", min: param.min, max: param.max, step: param.step,
-                    value: params[param.key],
-                    onChange: function(ev) { updateParam(param.key, ev.target.value); },
-                    style: { flex: 1, height: 4, accentColor: "#f5c542", cursor: "pointer" },
-                  }),
-                  e("span", { style: {
-                    fontSize: 11, color: "#f5c542", minWidth: 52,
-                    textAlign: "right", fontVariantNumeric: "tabular-nums",
-                  }},
-                    params[param.key],
-                    param.unit ? e("span", { style: { color: "#665e4d", marginLeft: 1 } }, param.unit) : null
-                  )
-                );
+            // Oscilloscope
+            e("div", { style: { width: "100%", maxWidth: 560 } },
+              e("div", { style: {
+                padding: "6px 14px", background: "#16151e", borderRadius: "6px 6px 0 0",
+                border: "1px solid #1e1d28", borderBottom: "none",
+                fontSize: 10, letterSpacing: 2, color: "#665e4d", textTransform: "uppercase",
+              }}, "OSCILLOSCOPE"),
+              e("canvas", {
+                ref: scopeRef, width: 560, height: 120,
+                style: { width: "100%", height: 120, display: "block", background: "#0c0b14",
+                  borderRadius: "0 0 6px 6px", border: "1px solid #1e1d28", borderTop: "none" }
               })
             ),
 
+            // Parameter sections
+            PARAM_SECTIONS.map(function(section) {
+              var isOpen = openSections[section.key];
+              return e("div", { key: section.key, style: { width: "100%", maxWidth: 560 } },
+                // Section header
+                e("div", {
+                  onClick: function() { toggleSection(section.key); },
+                  style: {
+                    padding: "8px 14px", background: "#16151e", cursor: "pointer",
+                    display: "flex", justifyContent: "space-between", alignItems: "center",
+                    borderRadius: isOpen ? "6px 6px 0 0" : 6,
+                    border: "1px solid #1e1d28",
+                    borderBottom: isOpen ? "none" : "1px solid #1e1d28",
+                  }
+                },
+                  e("span", { style: { fontSize: 11, letterSpacing: 2, color: "#f5c542" } }, section.title),
+                  e("span", { style: { fontSize: 10, color: "#665e4d" } }, isOpen ? "\u25BE" : "\u25B8")
+                ),
+                // Section body
+                isOpen && e("div", { style: {
+                  display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))",
+                  gap: "2px", background: "#16151e", borderRadius: "0 0 6px 6px",
+                  overflow: "hidden", border: "1px solid #1e1d28", borderTop: "none",
+                }},
+                  section.params.map(function(param) {
+                    if (param.type === "select") {
+                      return e("div", { key: param.key, style: rowStyle },
+                        e("label", { style: lblStyle }, param.label),
+                        e("select", {
+                          value: params[param.key],
+                          onChange: function(ev) { updateParam(param.key, ev.target.value); },
+                          style: selStyle,
+                        },
+                          param.options.map(function(opt) {
+                            return e("option", { key: opt, value: opt },
+                              opt.charAt(0).toUpperCase() + opt.slice(1));
+                          })
+                        )
+                      );
+                    }
+                    return e("div", { key: param.key, style: rowStyle },
+                      e("label", { style: lblStyle }, param.label),
+                      e("input", {
+                        type: "range", min: param.min, max: param.max, step: param.step,
+                        value: params[param.key],
+                        onChange: function(ev) { updateParam(param.key, ev.target.value); },
+                        style: { flex: 1, height: 4, accentColor: "#f5c542", cursor: "pointer" },
+                      }),
+                      e("span", { style: valStyle },
+                        params[param.key],
+                        param.unit ? e("span", { style: { color: "#665e4d", marginLeft: 1 } }, param.unit) : null
+                      )
+                    );
+                  })
+                )
+              );
+            }),
+
+            // Presets + Reset + Random
             e("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" } },
               PRESETS.map(function(preset) {
                 return e("button", {
                   key: preset.name,
-                  onClick: function() { setParams(preset.p); },
-                  style: {
-                    padding: "6px 14px", background: "transparent",
-                    border: "1px solid #2a2630", borderRadius: 4,
-                    color: "#998e75", fontSize: 11, cursor: "pointer",
-                    letterSpacing: 1, textTransform: "uppercase",
-                  },
+                  onClick: function() { setParams(Object.assign({}, preset.p)); },
+                  style: btnStyle,
                   onMouseEnter: function(ev) { ev.target.style.borderColor = "#f5c542"; ev.target.style.color = "#f5c542"; },
                   onMouseLeave: function(ev) { ev.target.style.borderColor = "#2a2630"; ev.target.style.color = "#998e75"; },
                 }, preset.name);
-              })
+              }),
+              e("button", {
+                onClick: function() { setParams(Object.assign({}, DEFAULTS)); },
+                style: Object.assign({}, btnStyle, { color: "#665e4d", borderColor: "#1e1d28" }),
+                onMouseEnter: function(ev) { ev.target.style.borderColor = "#f5c542"; ev.target.style.color = "#f5c542"; },
+                onMouseLeave: function(ev) { ev.target.style.borderColor = "#1e1d28"; ev.target.style.color = "#665e4d"; },
+              }, "RESET"),
+              e("button", {
+                onClick: randomize,
+                style: Object.assign({}, btnStyle, { color: "#665e4d", borderColor: "#1e1d28" }),
+                onMouseEnter: function(ev) { ev.target.style.borderColor = "#ff6b35"; ev.target.style.color = "#ff6b35"; },
+                onMouseLeave: function(ev) { ev.target.style.borderColor = "#1e1d28"; ev.target.style.color = "#665e4d"; },
+              }, "RANDOM")
             ),
 
+            // Dart code button
             e("button", {
               onClick: function() { setShowDart(!showDart); },
               style: {
@@ -557,6 +1097,7 @@
               }
             }, showDart ? "\u2715 CLOSE" : "\u2B21 GENERATE DART CODE"),
 
+            // Dart code panel
             showDart && e("div", { style: { width: "100%", maxWidth: 700, position: "relative" } },
               e("button", {
                 onClick: function() { navigator.clipboard.writeText(generateDart()); },
@@ -575,6 +1116,7 @@
               }}, generateDart())
             ),
 
+            // Footer
             e("div", { style: {
               textAlign: "center", padding: "16px 0 32px",
               fontSize: 10, color: "#2a2630", letterSpacing: 2,
